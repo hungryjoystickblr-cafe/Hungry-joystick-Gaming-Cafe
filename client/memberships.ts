@@ -1,0 +1,11 @@
+import type {Membership,Session} from './model';
+export const plans={10:{hours:10,days:10,price:699},30:{hours:30,days:30,price:1999},100:{hours:100,days:100,price:5999}};
+export const phoneKey=(s:string)=>s.length===10?'91'+s:s;
+export const indiaDay=(n:number)=>new Date(n).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+export const defaultExpiry=(purchase:string,days:number)=>indiaDay(Date.parse(purchase+'T00:00:00+05:30')+(days-1)*86400000);
+export const expiryTime=(date:string)=>Date.parse(date+'T23:59:59.999+05:30');
+export const playedMilliseconds=(s:Session,now:number)=>{const end=Math.min(now,s.end??now);return Math.max(0,end-s.start-(s.pauses??[]).reduce((sum,p)=>sum+Math.max(0,Math.min(end,p.end??end)-Math.max(s.start,p.start)),0));};
+export const minutesPlayed=(s:Session,now:number)=>Math.ceil(playedMilliseconds(s,now)/60000);
+export const coveredMinutes=(s:Session,now:number)=>s.membershipId?Math.min(s.memberMinutesAtStart??0,Math.ceil(playedMilliseconds(s,Math.min(now,s.memberExpiresAt??now))/60000)):0;
+export const hoursText=(minutes:number)=>`${Math.floor(Math.max(0,minutes)/60)}h ${Math.max(0,minutes)%60}m`;
+export const memberStatus=(m:Membership,now:number)=>m.payment==='Unpaid'?'Awaiting payment':now>m.expiresAt?'Expired':m.remainingMinutes<=0?'Exhausted':'Active';

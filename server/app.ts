@@ -1,0 +1,16 @@
+import express from 'express';
+import {z} from 'zod';
+import {owner,signIn,signOut} from './auth.js';
+import {mutate,snapshot,importBackup,database} from './store.js';
+const app=express();app.disable('x-powered-by');app.use(express.json({limit:'10mb'}));
+app.use((req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');res.set('Referrer-Policy','same-origin');if(req.method==='POST'){const origin=req.get('origin');if(!origin||new URL(origin).host!==req.get('host'))return res.status(403).json({error:'Request origin is not allowed.'});if(!req.is('application/json'))return res.status(415).json({error:'JSON required.'});}next();});
+app.get('/api/health',(_req,res)=>res.json({ok:true,stack:'MERN'}));
+app.get('/api/auth/me',async(req,res)=>{const user=await owner(req);res.status(user?200:401).json({owner:user});});
+app.post('/api/auth/login',(req,res)=>signIn(req,res));app.post('/api/auth/setup',(req,res)=>signIn(req,res,true));app.get('/api/auth/logout',signOut);
+app.use('/api/manage',async(req,res,next)=>{const user=await owner(req);if(!user)return res.status(401).json({error:'Please sign in.'});res.locals.owner=user;next();});
+app.get('/api/migration/status',async(req,res)=>{if(!await owner(req))return res.status(401).json({error:'Please sign in.'});const {db}=await database();const record=await db.collection('settings').findOne({_id:'cafe' as any});res.json({ready:!!record?.migratedAt,counts:record?.migrationCounts});});
+app.post('/api/migration/import',async(req,res)=>{if(!await owner(req))return res.status(401).json({error:'Please sign in.'});res.json(await importBackup(req.body));});
+app.get('/api/manage',async(req,res)=>{const known=req.query.revision===undefined?undefined:Number(req.query.revision);const data=await snapshot(known);if(!data)return res.status(204).end();res.json(data);});
+app.post('/api/manage',async(req,res)=>{const {db}=await database();const settings=await db.collection('settings').findOne({_id:'cafe' as any});if(!settings?.migratedAt)return res.status(503).json({error:'Import your complete café backup from Owner profile before starting operations.'});const key=z.string().uuid().parse(req.get('Idempotency-Key'));const revision=z.number().int().nonnegative().parse(req.body.revision);res.json(await mutate({...req.body,revision},res.locals.owner.email,key));});
+app.use((error:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{const status=error.status??(error instanceof z.ZodError?400:400);res.status(status).json({error:error instanceof z.ZodError?'Check the entered details.':error.message??'Request failed.'});});
+export default app;
