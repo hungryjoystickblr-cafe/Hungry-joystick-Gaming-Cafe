@@ -725,7 +725,11 @@ app.use((req, res, next) => {
       return;
     }
     try {
-      if (new URL(origin).host !== req.get("host")) {
+      const parsedOrigin = new URL(origin);
+      const configuredFrontend = process.env.FRONTEND_ORIGIN?.trim();
+      const sameHost = parsedOrigin.host === req.get("host");
+      const trustedFrontend = configuredFrontend !== void 0 && parsedOrigin.origin === configuredFrontend && parsedOrigin.protocol === "https:";
+      if (!sameHost && !trustedFrontend) {
         res.status(403).json({ error: "Request origin is not allowed." });
         return;
       }

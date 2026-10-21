@@ -17,8 +17,23 @@ app.use((req,res,next)=>{
     }
     const origin=req.get('origin');
     if(!origin){res.status(403).json({error:'Request origin is required.'});return;}
-    try{if(new URL(origin).host!==req.get('host')){res.status(403).json({error:'Request origin is not allowed.'});return;}}
-    catch{res.status(403).json({error:'Invalid request origin.'});return;}
+    try {
+      const parsedOrigin = new URL(origin);
+      const configuredFrontend = process.env.FRONTEND_ORIGIN?.trim();
+      // Keep localhost / same-host requests working, including local development.
+      const sameHost = parsedOrigin.host === req.get('host');
+      // The deployed frontend proxies /api/* to this Vercel backend.
+      const trustedFrontend = configuredFrontend !== undefined &&
+        parsedOrigin.origin === configuredFrontend &&
+        parsedOrigin.protocol === 'https:';
+      if (!sameHost && !trustedFrontend) {
+        res.status(403).json({error:'Request origin is not allowed.'});
+        return;
+      }
+    } catch {
+      res.status(403).json({error:'Invalid request origin.'});
+      return;
+    }
     if(!req.is('application/json')){res.status(415).json({error:'JSON required.'});return;}
   }
   next();
