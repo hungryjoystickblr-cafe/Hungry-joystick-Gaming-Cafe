@@ -1,0 +1,15 @@
+import {coveredMinutes,playedMilliseconds} from './memberships';
+export type CustomerRecord={id:string;name:string;phone:string;notes:string;createdAt:number;updatedAt:number};
+export type Station={id:string;name:string;type:string;rate:number;weekendRate?:number;controllerRate?:number};
+export type Food={id:string;name:string;price:number;category?:string};
+export type Membership={id:string;name:string;phone:string;planHours:10|30|100;purchasedDate:string;expiryDate:string;expiresAt:number;totalMinutes:number;remainingMinutes:number;importedUsedMinutes:number;price:number;payment:string;cashAmount?:number;upiAmount?:number;recordSale:boolean;createdAt:number};
+export type Shop={name:string;address:string;phone:string;email:string;gstin:string;receiptNote:string};
+export type TaxConfig={enabled:boolean;label:string;gamingRate:number;foodRate:number};
+export type Session={adjustment?:number;adjustmentReason?:string;history?:{at:number;actor:string;reason:string;before:Session;afterTotal:number}[];id:string;station:string;stationName:string;name:string;phone:string;start:number;pauses?:{start:number;end?:number}[];pausedAt?:number;planned:number|null;rate:number;controllerCount?:number;controllerRate?:number;offer?:{name:string;price:number;minutes:number;includes:string};kind?:'membershipSale'|'combined';sessions?:Session[];salePlan?:string;saleMembershipId?:string;membershipId?:string;memberPlan?:string;memberMinutesAtStart?:number;memberExpiresAt?:number;membershipMinutesUsed?:number;memberBalanceAfter?:number;items:{name:string;price:number;qty:number}[];shop?:Shop;tax?:{label:string;gamingRate:number;foodRate:number;amount:number};end?:number;gaming?:number;total?:number;payment?:string;cashAmount?:number;upiAmount?:number};
+export type Expense={id:string;date:string;category:string;description:string;amount:number;payment:string};
+export type State={customers?:CustomerRecord[];stations:Station[];menu:Food[];active:Session[];invoices:Session[];priceVersion?:number;memberships?:Membership[];completed?:Session[];expenses?:Expense[];shop?:Shop;taxConfig?:TaxConfig};
+export const initial=():State=>({stations:Array.from({length:16},(_,i)=>({id:'pc'+(i+1),name:'PC '+String(i+1).padStart(2,'0'),type:'PC',rate:79})),menu:[],active:[],invoices:[]});
+export const cost=(s:Session,now:number)=>{const minutes=Math.ceil(playedMilliseconds(s,now)/60000),hourly=s.rate+(s.controllerCount??0)*(s.controllerRate??0);return Math.round((s.membershipId?(Math.max(0,minutes-coveredMinutes(s,now))*s.rate+minutes*(s.controllerCount??0)*(s.controllerRate??0))/60:s.offer?s.offer.price+Math.max(0,minutes-s.offer.minutes)*hourly/60:minutes*hourly/60)*100)/100;};
+export const extras=(s:Session)=>s.items.reduce((a,x)=>a+x.price*x.qty,0);
+
+export function applyTax(session:Session,config?:TaxConfig){const amount=config?.enabled?Math.round(((session.gaming??0)*config.gamingRate+extras(session)*config.foodRate))/100:0;session.tax=config?.enabled?{label:config.label,gamingRate:config.gamingRate,foodRate:config.foodRate,amount}:undefined;session.total=Math.round(((session.gaming??0)+extras(session)+amount)*100)/100;}
