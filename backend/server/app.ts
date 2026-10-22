@@ -20,12 +20,14 @@ app.use((req,res,next)=>{
     try {
       const parsedOrigin = new URL(origin);
       const configuredFrontend = process.env.FRONTEND_ORIGIN?.trim();
+      // Exact public production frontend origin; no wildcard or CORS bypass.
+      const productionFrontend = 'https://hungry-joystick-frontend.vercel.app';
       // Keep localhost / same-host requests working, including local development.
       const sameHost = parsedOrigin.host === req.get('host');
       // The deployed frontend proxies /api/* to this Vercel backend.
-      const trustedFrontend = configuredFrontend !== undefined &&
-        parsedOrigin.origin === configuredFrontend &&
-        parsedOrigin.protocol === 'https:';
+      const trustedFrontend = parsedOrigin.protocol === 'https:' &&
+        (parsedOrigin.origin === productionFrontend ||
+         (configuredFrontend !== undefined && parsedOrigin.origin === configuredFrontend));
       if (!sameHost && !trustedFrontend) {
         res.status(403).json({error:'Request origin is not allowed.'});
         return;

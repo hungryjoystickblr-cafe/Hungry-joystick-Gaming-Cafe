@@ -727,8 +727,9 @@ app.use((req, res, next) => {
     try {
       const parsedOrigin = new URL(origin);
       const configuredFrontend = process.env.FRONTEND_ORIGIN?.trim();
+      const productionFrontend = "https://hungry-joystick-frontend.vercel.app";
       const sameHost = parsedOrigin.host === req.get("host");
-      const trustedFrontend = configuredFrontend !== void 0 && parsedOrigin.origin === configuredFrontend && parsedOrigin.protocol === "https:";
+      const trustedFrontend = parsedOrigin.protocol === "https:" && (parsedOrigin.origin === productionFrontend || configuredFrontend !== void 0 && parsedOrigin.origin === configuredFrontend);
       if (!sameHost && !trustedFrontend) {
         res.status(403).json({ error: "Request origin is not allowed." });
         return;
