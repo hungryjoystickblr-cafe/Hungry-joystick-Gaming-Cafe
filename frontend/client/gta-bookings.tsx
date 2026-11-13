@@ -10,7 +10,7 @@ const money=(value:number)=>'₹'+Number(value||0).toLocaleString('en-IN',{maxim
 const todayIndia=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const dateLabel=(value:string)=>new Date(value+'T00:00:00+05:30').toLocaleDateString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric'});
 const timeLabel=(value:number)=>new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(value));
-const paid=(booking:GtaBooking)=>booking.payments.reduce((sum,p)=>sum+Number(p.amount||0),0);
+const paid=(booking:GtaBooking)=>(booking.payments??[]).reduce((sum,p)=>sum+Number(p.amount||0),0);
 const durationLabel=(minutes:number)=>{const h=Math.floor(minutes/60),m=minutes%60;return h?(m?h+'h '+m+'m':h+'h'):m+'m';};
 const escapeCsv=(value:unknown)=>'"'+String(value??'').replaceAll('"','""').replace(/^[=+@-]/,"'$&")+'"';
 
