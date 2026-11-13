@@ -96,7 +96,7 @@ export function registerBookings(app:Express){
     if(values.advanceAmount>0&&!values.paymentMethod)throw Error('Select how the advance was received.');
     const start=startAt(values.date,values.startTime),end=start+values.durationMinutes*60000,key=resourceKey(values.resource),now=Date.now(),user=res.locals.bookingUser,actor=actorFor(user);
     const payments=values.advanceAmount>0?[{id:randomUUID(),amount:Math.round(values.advanceAmount*100)/100,method:values.paymentMethod!,receivedAt:now,actor}]:[];
-    const booking={id:randomUUID(),bookingCode:'HJ-GTA6-'+values.date.replaceAll('-','')+'-'+randomUUID().slice(0,4).toUpperCase(),name:values.name,phone:values.phone,source:values.source,resource:values.resource,resourceKey:key,date:values.date,startTime:values.startTime,start,end,durationMinutes:values.durationMinutes,players:values.players,totalAmount:Math.round(values.totalAmount*100)/100,payments,notes:values.notes,status:values.status,createdAt:now,updatedAt:now,createdBy:actor,updatedBy:actor};
+    const booking={id:randomUUID(),bookingCode:'HJ-GTA6-'+values.date.replaceAll('-','')+'-'+randomUUID().slice(0,6).toUpperCase(),name:values.name,phone:values.phone,source:values.source,resource:values.resource,resourceKey:key,date:values.date,startTime:values.startTime,start,end,durationMinutes:values.durationMinutes,players:values.players,totalAmount:Math.round(values.totalAmount*100)/100,payments,notes:values.notes,status:values.status,createdAt:now,updatedAt:now,createdBy:actor,updatedBy:actor};
     const {db,client}=await ready();
     await transaction(db,client,async(session)=>{
       if(['Pending','Confirmed'].includes(booking.status)){
