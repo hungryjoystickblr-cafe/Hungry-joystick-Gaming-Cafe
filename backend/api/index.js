@@ -374,13 +374,13 @@ async function database() {
   const client = await connection;
   return { client, db: client.db("hungry_joystick") };
 }
-var arrays = ["stations", "menu", "active", "completed", "memberships", "invoices", "expenses", "customers"];
+var arrays = ["stations", "menu", "active", "completed", "memberships", "invoices", "expenses", "customers", "bookings"];
 var clean = (x) => {
   const { _id, ...data } = x;
   return data;
 };
 async function syncCustomers(db, patch, session) {
-  const rows = ["memberships", "invoices", "active", "completed"].flatMap((key) => patch[key]?.upsert ?? []);
+  const rows = ["memberships", "invoices", "active", "completed", "bookings"].flatMap((key) => patch[key]?.upsert ?? []);
   const byPhone = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const name = String(row?.name ?? "").trim();
@@ -425,7 +425,7 @@ async function initialize() {
     const settings = await db.collection("settings").findOne({ _id: "cafe" }, { projection: { customerDirectoryVersion: 1 } });
     if ((settings?.customerDirectoryVersion ?? 0) < 2) {
       const rows = [];
-      for (const name of ["memberships", "invoices", "active", "completed"]) rows.push(...await db.collection(name).find({ phone: { $exists: true } }, { projection: { name: 1, phone: 1 } }).toArray());
+      for (const name of ["memberships", "invoices", "active", "completed", "bookings"]) rows.push(...await db.collection(name).find({ phone: { $exists: true } }, { projection: { name: 1, phone: 1 } }).toArray());
       const patch = { active: { upsert: rows, remove: [] } };
       const backfillSession = client.startSession();
       try {
@@ -755,6 +755,160 @@ app.post("/api/auth/staff-login", (req, res) => signIn(req, res));
 app.post("/api/auth/setup", (req, res) => signIn(req, res, true));
 app.get("/api/auth/logout", signOut);
 registerSystemHealth(app);
+
+var bookingCalendar = z3.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/).refine((d) => Number.isFinite(Date.parse(d + "T00:00:00Z")) && new Date(d + "T00:00:00Z").toISOString().slice(0, 10) === d);
+var bookingTime = z3.string().regex(/^(?:[01]\\d|2[0-3]):[0-5]\\d$/);
+var bookingSourceEnum = z3.enum(["Walk-in", "WhatsApp", "Phone"]);
+var bookingStatusEnum = z3.enum(["Pending", "Confirmed", "Completed", "Cancelled", "No-show"]);
+var createBookingSchema = z3.object({
+  name: z3.string().trim().min(1).max(100),
+  phone: z3.string().transform((v) => v.replace(/\\D/g, "")).pipe(z3.string().regex(/^\\d{10,15}$/)),
+  source: bookingSourceEnum,
+  resource: z3.string().trim().min(2).max(80),
+  date: bookingCalendar,
+  startTime: bookingTime,
+  durationMinutes: z3.number().int().min(1).max(1440),
+  players: z3.number().int().min(1).max(8),
+  totalAmount: z3.number().positive().max(1e7),
+  advanceAmount: z3.number().min(0).max(1e7).default(0),
+  paymentMethod: z3.enum(["Cash", "UPI"]).optional(),
+  notes: z3.string().trim().max(1e3).default(""),
+  status: bookingStatusEnum.default("Confirmed")
+}).strict();
+var updateBookingSchema = z3.object({
+  name: z3.string().trim().min(1).max(100).optional(),
+  phone: z3.string().transform((v) => v.replace(/\\D/g, "")).pipe(z3.string().regex(/^\\d{10,15}$/)).optional(),
+  source: bookingSourceEnum.optional(),
+  resource: z3.string().trim().min(2).max(80).optional(),
+  date: bookingCalendar.optional(),
+  startTime: bookingTime.optional(),
+  durationMinutes: z3.number().int().min(1).max(1440).optional(),
+  players: z3.number().int().min(1).max(8).optional(),
+  totalAmount: z3.number().positive().max(1e7).optional(),
+  notes: z3.string().trim().max(1e3).optional(),
+  status: bookingStatusEnum.optional()
+}).strict().refine((v) => Object.keys(v).length > 0);
+var bookingPaymentSchema = z3.object({ amount: z3.number().positive().max(1e7), method: z3.enum(["Cash", "UPI"]) }).strict();
+var bookingResourceKey = (value) => value.trim().toLocaleLowerCase().replace(/\\s+/g, " ");
+var bookingStartAt = (date, startTime) => {
+  const value = Date.parse(date + "T" + startTime + ":00+05:30");
+  if (!Number.isFinite(value)) throw Error("Enter a valid booking date and start time.");
+  return value;
+};
+var bookingPaid = (booking) => Math.round((booking.payments ?? []).reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0)) / 100;
+var bookingActor = (user) => user.role === "staff" ? "staff:" + user.username : user.email;
+async function readyBookings() {
+  await initialize();
+  const { db, client } = await database();
+  await db.collection("bookings").createIndex({ id: 1 }, { unique: true });
+  await db.collection("bookings").createIndex({ resourceKey: 1, start: 1, end: 1, status: 1 });
+  await db.collection("bookingLocks").updateOne({ _id: "gta6" }, { $setOnInsert: { revision: 0 } }, { upsert: true });
+  return { db, client };
+}
+async function bookingTransaction(db, client, work) {
+  const session = client.startSession();
+  try {
+    const result = await session.withTransaction(async () => {
+      await db.collection("bookingLocks").updateOne({ _id: "gta6" }, { $inc: { revision: 1 } }, { session });
+      const settings = await db.collection("settings").findOne({ _id: "cafe" }, { session });
+      if (!settings?.migratedAt) throw Object.assign(Error("Import your complete café backup from Owner profile before starting operations."), { status: 503 });
+      const value = await work(session, settings);
+      const saved = await db.collection("settings").updateOne({ _id: "cafe", revision: settings.revision }, { $inc: { revision: 1 } }, { session });
+      if (saved.modifiedCount !== 1) throw Object.assign(Error("Another device saved a change. Refresh and retry."), { status: 409 });
+      return value;
+    }, { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}
+async function findBookingConflict(db, session, key, start, end, excludeId) {
+  const filter = { resourceKey: key, status: { $in: ["Pending", "Confirmed"] }, start: { $lt: end }, end: { $gt: start } };
+  if (excludeId) filter.id = { $ne: excludeId };
+  return db.collection("bookings").findOne(filter, { session, projection: { bookingCode: 1, name: 1, start: 1, end: 1 } });
+}
+function bookingConflictError(conflict) {
+  const when = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(conflict.start));
+  return Object.assign(Error("This setup already has a booking for " + when + " (" + conflict.bookingCode + "). Choose another time or setup."), { status: 409 });
+}
+function upsertBookingCustomer(db, session, booking) {
+  return db.collection("customers").updateOne({ phone: booking.phone }, { $setOnInsert: { id: randomUUID(), name: booking.name, phone: booking.phone, notes: "", createdAt: Date.now(), updatedAt: Date.now() } }, { upsert: true, session });
+}
+app.use("/api/bookings", async (req, res, next) => {
+  const user = await owner(req);
+  if (!user) {
+    res.status(401).json({ error: "Please sign in." });
+    return;
+  }
+  res.locals.bookingUser = user;
+  next();
+});
+app.get("/api/bookings", async (_req, res) => {
+  const { db } = await readyBookings();
+  const bookings = await db.collection("bookings").find({}).sort({ start: -1 }).toArray();
+  res.json({ bookings: bookings.map(({ _id, ...row }) => row) });
+});
+app.post("/api/bookings", async (req, res) => {
+  const values = createBookingSchema.parse(req.body);
+  if (values.advanceAmount > values.totalAmount) throw Error("Advance cannot be greater than the total booking amount.");
+  if (values.advanceAmount > 0 && !values.paymentMethod) throw Error("Select how the advance was received.");
+  const start = bookingStartAt(values.date, values.startTime), end = start + values.durationMinutes * 6e4, key = bookingResourceKey(values.resource), now = Date.now(), user = res.locals.bookingUser, actor = bookingActor(user);
+  const payments = values.advanceAmount > 0 ? [{ id: randomUUID(), amount: Math.round(values.advanceAmount * 100) / 100, method: values.paymentMethod, receivedAt: now, actor }] : [];
+  const booking = { id: randomUUID(), bookingCode: "HJ-GTA6-" + values.date.replaceAll("-", "") + "-" + randomUUID().slice(0, 4).toUpperCase(), name: values.name, phone: values.phone, source: values.source, resource: values.resource, resourceKey: key, date: values.date, startTime: values.startTime, start, end, durationMinutes: values.durationMinutes, players: values.players, totalAmount: Math.round(values.totalAmount * 100) / 100, payments, notes: values.notes, status: values.status, createdAt: now, updatedAt: now, createdBy: actor, updatedBy: actor };
+  const { db, client } = await readyBookings();
+  await bookingTransaction(db, client, async (session) => {
+    if (["Pending", "Confirmed"].includes(booking.status)) {
+      const conflict = await findBookingConflict(db, session, key, start, end);
+      if (conflict) throw bookingConflictError(conflict);
+    }
+    await db.collection("bookings").insertOne(booking, { session });
+    await upsertBookingCustomer(db, session, booking);
+    await db.collection("activityLog").insertOne({ at: new Date(), actor, action: "gta6BookingCreated", recordId: booking.id }, { session });
+    return true;
+  });
+  res.status(201).json({ booking });
+});
+app.patch("/api/bookings/:id", async (req, res) => {
+  const values = updateBookingSchema.parse(req.body), { db, client } = await readyBookings(), user = res.locals.bookingUser, actor = bookingActor(user), now = Date.now();
+  const booking = await bookingTransaction(db, client, async (session) => {
+    const existing = await db.collection("bookings").findOne({ id: req.params.id }, { session });
+    if (!existing) throw Object.assign(Error("Booking not found."), { status: 404 });
+    const next = { ...existing, ...values };
+    next.phone = String(next.phone).replace(/\\D/g, "");
+    next.resourceKey = bookingResourceKey(next.resource);
+    next.start = bookingStartAt(next.date, next.startTime);
+    next.end = next.start + next.durationMinutes * 6e4;
+    next.totalAmount = Math.round(next.totalAmount * 100) / 100;
+    next.updatedAt = now;
+    next.updatedBy = actor;
+    if (next.totalAmount < bookingPaid(next)) throw Error("Total amount cannot be lower than payments already received.");
+    if (["Pending", "Confirmed"].includes(next.status)) {
+      const conflict = await findBookingConflict(db, session, next.resourceKey, next.start, next.end, next.id);
+      if (conflict) throw bookingConflictError(conflict);
+    }
+    await db.collection("bookings").replaceOne({ id: next.id }, next, { session });
+    await upsertBookingCustomer(db, session, next);
+    await db.collection("activityLog").insertOne({ at: new Date(), actor, action: "gta6BookingUpdated", recordId: next.id }, { session });
+    return next;
+  });
+  res.json({ booking });
+});
+app.post("/api/bookings/:id/payments", async (req, res) => {
+  const values = bookingPaymentSchema.parse(req.body), { db, client } = await readyBookings(), user = res.locals.bookingUser, actor = bookingActor(user), now = Date.now();
+  const booking = await bookingTransaction(db, client, async (session) => {
+    const existing = await db.collection("bookings").findOne({ id: req.params.id }, { session });
+    if (!existing) throw Object.assign(Error("Booking not found."), { status: 404 });
+    if (existing.status === "Cancelled" || existing.status === "No-show") throw Error("Payments cannot be added to a cancelled or no-show booking.");
+    if (Math.round((bookingPaid(existing) + values.amount) * 100) > Math.round(existing.totalAmount * 100)) throw Error("Payment exceeds the remaining balance.");
+    const payment = { id: randomUUID(), amount: Math.round(values.amount * 100) / 100, method: values.method, receivedAt: now, actor };
+    const next = { ...existing, payments: [...(existing.payments ?? []), payment], updatedAt: now, updatedBy: actor };
+    await db.collection("bookings").replaceOne({ id: next.id }, next, { session });
+    await db.collection("activityLog").insertOne({ at: new Date(), actor, action: "gta6BookingPayment", recordId: next.id }, { session });
+    return next;
+  });
+  res.json({ booking });
+});
+
 app.use("/api/manage", async (req, res, next) => {
   const user = await owner(req);
   if (!user) {
