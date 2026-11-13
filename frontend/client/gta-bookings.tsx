@@ -43,6 +43,8 @@ export default function GtaBookings(){
  const upcoming=bookings.filter(b=>b.start>=now&&['Pending','Confirmed'].includes(b.status));
  const todayBookings=bookings.filter(b=>b.date===today&&['Pending','Confirmed'].includes(b.status));
  const advanceTotal=bookings.reduce((sum,b)=>sum+paid(b),0);
+ const cashAdvance=bookings.reduce((sum,b)=>sum+b.payments.filter(p=>p.method==='Cash').reduce((n,p)=>n+Number(p.amount||0),0),0);
+ const upiAdvance=bookings.reduce((sum,b)=>sum+b.payments.filter(p=>p.method==='UPI').reduce((n,p)=>n+Number(p.amount||0),0),0);
  const outstanding=bookings.filter(b=>!['Cancelled','No-show'].includes(b.status)).reduce((sum,b)=>sum+Math.max(0,b.totalAmount-paid(b)),0);
  const resources=useMemo(()=>[...new Set(['GTA 6 Setup 1',...bookings.map(b=>b.resource)])].sort((a,b)=>a.localeCompare(b)),[bookings]);
  const visible=useMemo(()=>{
@@ -97,7 +99,7 @@ export default function GtaBookings(){
   <div className="stats" style={{marginBottom:20}}>
    <div className="stat"><div><span>Today's bookings</span><CalendarDays size={18}/></div><strong>{todayBookings.length}</strong><small>Pending and confirmed</small></div>
    <div className="stat"><div><span>Upcoming bookings</span><Clock size={18}/></div><strong>{upcoming.length}</strong><small>Future reservations</small></div>
-   <div className="stat"><div><span>Advance collected</span><Wallet size={18}/></div><strong>{money(advanceTotal)}</strong><small>Manually recorded payments</small></div>
+   <div className="stat"><div><span>Advance collected</span><Wallet size={18}/></div><strong>{money(advanceTotal)}</strong><small>Cash {money(cashAdvance)} · UPI {money(upiAdvance)}</small></div>
    <div className="stat"><div><span>Outstanding balance</span><IndianRupee size={18}/></div><strong>{money(outstanding)}</strong><small>Excludes cancelled and no-show</small></div>
   </div>
   <div className="panel" style={{padding:20}}>
@@ -121,7 +123,7 @@ export default function GtaBookings(){
      <td><b>{b.resource}</b></td>
      <td><b>{dateLabel(b.date)}</b><small>{timeLabel(b.start)} – {timeLabel(b.end)} · {durationLabel(b.durationMinutes)}</small></td>
      <td>{b.players}</td>
-     <td><b>{money(b.totalAmount)}</b><small>Paid {money(amountPaid)} · Due {money(balance)}</small></td>
+     <td><b>{money(b.totalAmount)}</b><small>Paid {money(amountPaid)} · Due {money(balance)}</small><small>{b.payments.map(p=>p.method+' '+money(p.amount)).join(' · ')||'No advance recorded'}</small></td>
      <td><select aria-label={'Status for '+b.bookingCode} value={b.status} disabled={busy} onChange={e=>void changeStatus(b,e.target.value as Status)} style={{width:125,padding:'7px 8px',fontSize:10}}>{statuses.map(s=><option key={s}>{s}</option>)}</select></td>
      <td><div style={{display:'flex',gap:6,flexWrap:'wrap'}}><button type="button" onClick={()=>{setError('');setDraft(b)}}><Pencil size={13}/> Edit</button><button type="button" disabled={busy||balance<=0||['Cancelled','No-show'].includes(b.status)} onClick={()=>{setError('');setPaymentTarget(b)}}><IndianRupee size={13}/> Add payment</button></div></td>
     </tr>;})}
@@ -129,7 +131,7 @@ export default function GtaBookings(){
   </div>
   {draft!==undefined&&<div className="modalback" onClick={()=>setDraft(undefined)}><section className="modal" role="dialog" aria-modal="true" aria-label={draft?'Edit GTA 6 booking':'New GTA 6 booking'} onClick={e=>e.stopPropagation()} style={{width:560}}>
    <button className="close" type="button" aria-label="Close booking form" onClick={()=>setDraft(undefined)}>×</button>
-   <span className="eyebrow">HUNGRY JOYSTICK / GTA 6</span><h2>{draft?'Edit booking':'Create booking'}</h2>
+   <span className="eyebrow">HUNGRY JOYSTICK / GTA 6</span><h2>{draft?'Edit booking':'Create booking'}</h2>{error&&<div className="error" role="alert">{error}</div>}
    <form onSubmit={saveBooking}>
     <div className="formrow"><label>Customer name<input name="name" required maxLength={100} defaultValue={draft?.name??''} placeholder="Customer name"/></label><label>Mobile number<input name="phone" required type="tel" minLength={10} maxLength={15} defaultValue={draft?.phone??''} placeholder="10-digit mobile"/></label></div>
     <div className="formrow"><label>Booking source<select name="source" defaultValue={draft?.source??'Walk-in'}>{sources.map(s=><option key={s}>{s}</option>)}</select></label><label>Gaming setup<input name="resource" list="gta6-resources" required maxLength={80} defaultValue={draft?.resource??resources[0]} placeholder="GTA 6 Setup 1"/><datalist id="gta6-resources">{resources.map(r=><option key={r} value={r}/>)}</datalist><small>Use the same setup name consistently to prevent overlapping bookings.</small></label></div>
@@ -143,7 +145,7 @@ export default function GtaBookings(){
    </form>
   </section></div>}
   {paymentTarget&&<div className="modalback" onClick={()=>setPaymentTarget(null)}><section className="modal" role="dialog" aria-modal="true" aria-label="Record booking payment" onClick={e=>e.stopPropagation()}>
-   <button className="close" type="button" aria-label="Close payment form" onClick={()=>setPaymentTarget(null)}>×</button><span className="eyebrow">PAYMENT ENTRY</span><h2>Record payment</h2><p>{paymentTarget.bookingCode} · {paymentTarget.name}</p><div className="paymentrow"><span>Total booking amount</span><b>{money(paymentTarget.totalAmount)}</b></div><div className="paymentrow"><span>Already received</span><b>{money(paid(paymentTarget))}</b></div><div className="paymentrow"><span>Remaining balance</span><b>{money(Math.max(0,paymentTarget.totalAmount-paid(paymentTarget)))}</b></div>
+   <button className="close" type="button" aria-label="Close payment form" onClick={()=>setPaymentTarget(null)}>×</button><span className="eyebrow">PAYMENT ENTRY</span><h2>Record payment</h2>{error&&<div className="error" role="alert">{error}</div>}<p>{paymentTarget.bookingCode} · {paymentTarget.name}</p><div className="paymentrow"><span>Total booking amount</span><b>{money(paymentTarget.totalAmount)}</b></div><div className="paymentrow"><span>Already received</span><b>{money(paid(paymentTarget))}</b></div><div className="paymentrow"><span>Remaining balance</span><b>{money(Math.max(0,paymentTarget.totalAmount-paid(paymentTarget)))}</b></div>
    <form onSubmit={addPayment}><label>Amount received (₹)<input name="amount" type="number" required min="0.01" max={Math.max(0,paymentTarget.totalAmount-paid(paymentTarget))} step="0.01" autoFocus/></label><label>Payment mode<select name="method"><option>UPI</option><option>Cash</option></select></label><div className="modalfooter"><button type="button" onClick={()=>setPaymentTarget(null)}>Cancel</button><button type="submit" className="primary" disabled={busy}>{busy?'Saving…':'Record payment'}</button></div></form>
   </section></div>}
  </section>;
