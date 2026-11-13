@@ -1,4 +1,5 @@
 import {useEffect,useMemo,useState} from 'react';
+import type {FormEvent} from 'react';
 import {CalendarDays,Clock,Users,IndianRupee,Plus,Search,Download,Wallet,RefreshCw,Pencil,CheckCircle2} from 'lucide-react';
 import type {GtaBooking} from './model';
 
@@ -51,7 +52,7 @@ export default function GtaBookings(){
   const q=query.trim().toLowerCase();
   return [...bookings].filter(b=>(filter==='All'||b.status===filter)&&(!q||[b.bookingCode,b.name,b.phone,b.resource,b.source].some(v=>String(v).toLowerCase().includes(q)))).sort((a,b)=>a.start-b.start);
  },[bookings,filter,query]);
- async function saveBooking(e:React.FormEvent<HTMLFormElement>){
+ async function saveBooking(e:FormEvent<HTMLFormElement>){
   e.preventDefault();if(busy)return;setBusy(true);setError('');
   const data=new FormData(e.currentTarget),editing=Boolean(draft);
   const body:Record<string,unknown>={
