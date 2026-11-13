@@ -43,8 +43,8 @@ export default function GtaBookings(){
  const upcoming=bookings.filter(b=>b.start>=now&&['Pending','Confirmed'].includes(b.status));
  const todayBookings=bookings.filter(b=>b.date===today&&['Pending','Confirmed'].includes(b.status));
  const advanceTotal=bookings.reduce((sum,b)=>sum+paid(b),0);
- const cashAdvance=bookings.reduce((sum,b)=>sum+b.payments.filter(p=>p.method==='Cash').reduce((n,p)=>n+Number(p.amount||0),0),0);
- const upiAdvance=bookings.reduce((sum,b)=>sum+b.payments.filter(p=>p.method==='UPI').reduce((n,p)=>n+Number(p.amount||0),0),0);
+ const cashAdvance=bookings.reduce((sum,b)=>sum+(b.payments??[]).filter(p=>p.method==='Cash').reduce((n,p)=>n+Number(p.amount||0),0),0);
+ const upiAdvance=bookings.reduce((sum,b)=>sum+(b.payments??[]).filter(p=>p.method==='UPI').reduce((n,p)=>n+Number(p.amount||0),0),0);
  const outstanding=bookings.filter(b=>!['Cancelled','No-show'].includes(b.status)).reduce((sum,b)=>sum+Math.max(0,b.totalAmount-paid(b)),0);
  const resources=useMemo(()=>[...new Set(['GTA 6 Setup 1',...bookings.map(b=>b.resource)])].sort((a,b)=>a.localeCompare(b)),[bookings]);
  const visible=useMemo(()=>{
@@ -129,7 +129,7 @@ export default function GtaBookings(){
     </tr>;})}
    </tbody></table>{visible.length===0&&<div className="empty">{bookings.length?'No bookings match this search or filter.':'No GTA 6 bookings yet. Add the first walk-in, WhatsApp or phone reservation.'}</div>}</div>}
   </div>
-  {draft!==undefined&&<div className="modalback" onClick={()=>setDraft(undefined)}><section className="modal" role="dialog" aria-modal="true" aria-label={draft?'Edit GTA 6 booking':'New GTA 6 booking'} onClick={e=>e.stopPropagation()} style={{width:560}}>
+  {draft!==undefined&&<div className="modalback" onClick={()=>setDraft(undefined)}><section className="modal" role="dialog" aria-modal="true" aria-label={draft?'Edit GTA 6 booking':'New GTA 6 booking'} onClick={e=>e.stopPropagation()} style={{width:'min(560px, 100%)'}}>
    <button className="close" type="button" aria-label="Close booking form" onClick={()=>setDraft(undefined)}>×</button>
    <span className="eyebrow">HUNGRY JOYSTICK / GTA 6</span><h2>{draft?'Edit booking':'Create booking'}</h2>{error&&<div className="error" role="alert">{error}</div>}
    <form onSubmit={saveBooking}>
@@ -140,7 +140,7 @@ export default function GtaBookings(){
     <div className="formrow"><label>Total booking amount (₹)<input name="totalAmount" type="number" required min={0.01} max={10000000} step="0.01" defaultValue={draft?.totalAmount??''}/></label><label>Booking status<select name="status" defaultValue={draft?.status??'Confirmed'}>{statuses.map(s=><option key={s}>{s}</option>)}</select></label></div>
     {!draft&&<><div className="formrow"><label>Advance received (₹)<input name="advanceAmount" type="number" min={0} max={10000000} step="0.01" defaultValue={0}/></label><label>Advance payment mode<select name="paymentMethod" defaultValue="UPI"><option>UPI</option><option>Cash</option></select></label></div><p className="formnote">Leave advance as ₹0 if no payment has been received. Add further payments later using “Add payment”.</p></>}
     {draft&&<p className="formnote">Payments already recorded: {money(paid(draft))}. The total booking amount cannot be reduced below the amount already received.</p>}
-    <label>Notes (optional)<textarea name="notes" rows={3} maxLength={1000} defaultValue={draft?.notes??''} placeholder="Special requests or booking details"/></label>
+    <label>Notes (optional)<textarea name="notes" rows={3} maxLength={1000} defaultValue={draft?.notes??''} placeholder="Special requests or booking details" style={{width:'100%',marginTop:7,padding:11,border:'1px solid #dce2de',borderRadius:7,font:'inherit'}}/></label>
     <div className="modalfooter"><button type="button" onClick={()=>setDraft(undefined)}>Cancel</button><button type="submit" className="primary" disabled={busy}>{busy?'Saving…':draft?'Save changes':'Create booking'}</button></div>
    </form>
   </section></div>}
