@@ -22,3 +22,15 @@ assert.throws(()=>applyOperation(s,{op:'deleteStation',id:'pc-1'},'test'));
 applyOperation(s,{op:'pause',id:s.active[0].id},'test',start+1000);
 assert.throws(()=>applyOperation(s,{op:'deleteStation',id:'pc-1'},'test'));
 console.log('PASS: station deletion preserves invoices and rejects active, paused and missing stations.');
+const cancelState=upgradePrices(initial());cancelState.completed=[];cancelState.cancelled=[];cancelState.memberships=[{id:'member-1',name:'Member Test',phone:'9876543210',planHours:10,purchasedDate:'2026-10-14',expiryDate:'2026-10-24',expiresAt:start+10*86400000,totalMinutes:600,remainingMinutes:540,importedUsedMinutes:0,price:699,payment:'UPI',recordSale:true,createdAt:start}];
+applyOperation(cancelState,{op:'start',station:cancelState.stations[0].id,name:'Walk-in test',phone:'',minutes:null},'test',start);
+const activeCancel=cancelState.active[0];applyOperation(cancelState,{op:'cancel',id:activeCancel.id,reason:'Customer had to leave'},'test',start+4*60000);
+assert.equal(cancelState.active.length,0);assert.equal(cancelState.cancelled.length,1);assert.equal(cancelState.cancelled[0].total,0);assert.equal(cancelState.cancelled[0].payment,'Cancelled');assert.equal(cancelState.invoices.length,0);assert.throws(()=>applyOperation(cancelState,{op:'cancel',id:activeCancel.id,reason:'Duplicate cancel'},'test',start+5*60000));
+applyOperation(cancelState,{op:'start',station:cancelState.stations[0].id,name:'Member Test',phone:'9876543210',minutes:null,membershipId:'member-1'},'test',start);
+const memberSession=cancelState.active[0];applyOperation(cancelState,{op:'stop',id:memberSession.id},'test',start+30*60000);
+assert.equal(cancelState.memberships[0].remainingMinutes,510);
+applyOperation(cancelState,{op:'cancel',id:memberSession.id,reason:'PC issue'},'test',start+31*60000);
+assert.equal(cancelState.memberships[0].remainingMinutes,540);assert.equal(cancelState.completed.length,0);assert.equal(cancelState.cancelled.length,2);assert.equal(cancelState.cancelled[1].total,0);assert.equal(cancelState.invoices.length,0);
+assert.throws(()=>applyOperation(cancelState,{op:'cancel',id:activeCancel.id,reason:'x'},'test',start+32*60000));
+console.log('PASS: active and Billing Desk cancellation, ₹0 records, duplicate protection, station release, and membership-minute restoration.');
+
