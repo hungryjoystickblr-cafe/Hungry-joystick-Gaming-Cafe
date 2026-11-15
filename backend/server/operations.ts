@@ -37,6 +37,7 @@ if(op.op==='deleteExpense'){s.expenses=(s.expenses??[]).filter(x=>x.id!==op.id);
 if(op.op==='pause'||op.op==='resume'){const a=s.active.find(x=>x.id===op.id);if(!a)throw Error('Session is already closed.');if(op.op==='pause'){if(a.pausedAt!==undefined)throw Error('Session is already paused.');a.pausedAt=now;a.pauses??=[];a.pauses.push({start:now});}else{if(a.pausedAt===undefined)throw Error('Session is not paused.');if(a.planned)a.planned+=now-a.pausedAt;const pause=a.pauses?.slice().reverse().find(p=>p.end===undefined);if(pause)pause.end=now;delete a.pausedAt;}}
 if(op.op==='resumeCompleted'){
 const session=s.completed.find(x=>x.id===op.id);if(!session)throw Error('Session is no longer waiting for billing.');
+if(!s.stations.some(x=>x.id===session.station))throw Error('The original station is no longer configured. This session cannot be resumed.');
 if(s.active.some(x=>x.station===session.station))throw Error('This station is already in use. End its current session before resuming this one.');
 session.pauses??=[];const openPause=session.pauses.slice().reverse().find(p=>p.end===undefined);
 const pausedSince=session.pausedAt??openPause?.start??session.end??now;
