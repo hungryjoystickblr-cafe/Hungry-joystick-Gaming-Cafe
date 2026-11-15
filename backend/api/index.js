@@ -1,7 +1,7 @@
 // server/app.ts
 import express from "express";
-import { randomUUID } from "node:crypto";
-import { z as z3 } from "zod";
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { z as z4 } from "zod";
 
 // server/auth.ts
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } from "node:crypto";
@@ -177,6 +177,7 @@ var input = z.discriminatedUnion("op", [
   z.object({ op: z.literal("taxConfig"), enabled: z.boolean(), label: z.string().trim().min(1).max(50), gamingRate: z.number().min(0).max(100), foodRate: z.number().min(0).max(100) }),
   z.object({ op: z.literal("pause"), id: z.string() }),
   z.object({ op: z.literal("resume"), id: z.string() }),
+  z.object({ op: z.literal("resumeCompleted"), id: z.string() }),
   z.object({ op: z.literal("expense"), date: calendar, category: z.string().trim().min(1).max(60), description: z.string().trim().min(1).max(200), amount: z.number().positive().max(1e7), payment: z.enum(["Cash", "UPI", "Card"]) }),
   z.object({ op: z.literal("deleteExpense"), id: z.string() }),
   z.object({ op: z.literal("stop"), id: z.string() }),
@@ -243,6 +244,41 @@ function applyOperation(s, body, actor, now = Date.now()) {
       delete a.pausedAt;
     }
   }
+  if (op.op === "resumeCompleted") {
+    const session = s.completed.find((x) => x.id === op.id);
+    if (!session) throw Error("Session is no longer waiting for billing.");
+    if (!s.stations.some((x) => x.id === session.station)) throw Error("The original station is no longer configured. This session cannot be resumed.");
+    if (s.active.some((x) => x.station === session.station)) throw Error("This station is already in use. End its current session before resuming this one.");
+    session.pauses ??= [];
+    const openPause = session.pauses.slice().reverse().find((p) => p.end === void 0);
+    const pausedSince = session.pausedAt ?? openPause?.start ?? session.end ?? now;
+    if (!openPause) session.pauses.push({ start: pausedSince });
+    if (session.planned !== null) session.planned += Math.max(0, now - pausedSince);
+    const pause = session.pauses.slice().reverse().find((p) => p.end === void 0);
+    if (pause) pause.end = now;
+    delete session.pausedAt;
+    if (session.membershipId) {
+      const member = s.memberships.find((x) => x.id === session.membershipId);
+      if (!member) throw Error("Membership record is missing.");
+      if (s.active.some((a) => a.membershipId && phoneKey(a.phone) === member.phone)) throw Error("This customer already has an active membership session.");
+      const previouslyUsed = session.membershipMinutesUsed ?? 0;
+      if (member.remainingMinutes + previouslyUsed > member.totalMinutes) throw Error("Membership balance changed. Refresh before resuming this session.");
+      member.remainingMinutes += previouslyUsed;
+      session.memberMinutesAtStart = member.remainingMinutes;
+      delete session.membershipMinutesUsed;
+      delete session.memberBalanceAfter;
+    }
+    delete session.end;
+    delete session.gaming;
+    delete session.total;
+    delete session.tax;
+    delete session.shop;
+    delete session.payment;
+    delete session.cashAmount;
+    delete session.upiAmount;
+    s.completed = s.completed.filter((x) => x.id !== session.id);
+    s.active.push(session);
+  }
   if (op.op === "membership") {
     const p = plans[op.planHours];
     if (op.remainingMinutes > p.hours * 60) throw Error("Remaining time exceeds the purchased hours.");
@@ -302,6 +338,11 @@ function applyOperation(s, body, actor, now = Date.now()) {
       session.items.push({ name: f.name, price: f.price, qty: op.qty });
     }
     if (op.op === "end" || op.op === "stop") {
+      if (op.op === "stop" && session.pausedAt === void 0) {
+        session.pausedAt = now;
+        session.pauses ??= [];
+        session.pauses.push({ start: now });
+      }
       if (session.membershipId) {
         const m = s.memberships.find((x) => x.id === session.membershipId);
         if (!m) throw Error("Membership record is missing.");
@@ -374,13 +415,13 @@ async function database() {
   const client = await connection;
   return { client, db: client.db("hungry_joystick") };
 }
-var arrays = ["stations", "menu", "active", "completed", "memberships", "invoices", "expenses", "customers"];
+var arrays = ["stations", "menu", "active", "completed", "memberships", "invoices", "expenses", "customers", "bookings"];
 var clean = (x) => {
   const { _id, ...data } = x;
   return data;
 };
 async function syncCustomers(db, patch, session) {
-  const rows = ["memberships", "invoices", "active", "completed"].flatMap((key) => patch[key]?.upsert ?? []);
+  const rows = ["memberships", "invoices", "active", "completed", "bookings"].flatMap((key) => patch[key]?.upsert ?? []);
   const byPhone = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const name = String(row?.name ?? "").trim();
@@ -425,7 +466,7 @@ async function initialize() {
     const settings = await db.collection("settings").findOne({ _id: "cafe" }, { projection: { customerDirectoryVersion: 1 } });
     if ((settings?.customerDirectoryVersion ?? 0) < 2) {
       const rows = [];
-      for (const name of ["memberships", "invoices", "active", "completed"]) rows.push(...await db.collection(name).find({ phone: { $exists: true } }, { projection: { name: 1, phone: 1 } }).toArray());
+      for (const name of ["memberships", "invoices", "active", "completed", "bookings"]) rows.push(...await db.collection(name).find({ phone: { $exists: true } }, { projection: { name: 1, phone: 1 } }).toArray());
       const patch = { active: { upsert: rows, remove: [] } };
       const backfillSession = client.startSession();
       try {
@@ -539,13 +580,13 @@ async function mutate(body, actor, key) {
 }
 async function importBackup(payload) {
   if (!payload?.state || !Number.isInteger(payload.revision) || payload.revision < 0) throw Error("Choose a complete Hungry Joystick JSON backup.");
-  const source = payload.state;
+  const source2 = payload.state;
   for (const key of arrays) {
-    if (!Array.isArray(source[key] ?? [])) throw Error("Invalid backup collection: " + key);
-    const rows = source[key] ?? [];
+    if (!Array.isArray(source2[key] ?? [])) throw Error("Invalid backup collection: " + key);
+    const rows = source2[key] ?? [];
     if (rows.some((x) => !x || typeof x.id !== "string" || x.id.length > 200) || new Set(rows.map((x) => x.id)).size !== rows.length) throw Error("Invalid or duplicate record IDs: " + key);
   }
-  for (const key of ["active", "completed", "invoices"]) for (const row of source[key] ?? []) {
+  for (const key of ["active", "completed", "invoices"]) for (const row of source2[key] ?? []) {
     if (!Number.isFinite(row.start) || !Array.isArray(row.items)) throw Error("Invalid session in backup");
   }
   await initialize();
@@ -557,16 +598,16 @@ async function importBackup(payload) {
       if (current?.revision !== 0 || current?.migratedAt) throw Error("This database already contains business data. Import refused.");
       for (const key of arrays) {
         await db.collection(key).deleteMany({}, { session });
-        const rows = source[key] ?? [];
+        const rows = source2[key] ?? [];
         if (rows.length) await db.collection(key).insertMany(rows.map((row) => {
           const { _id, ...data2 } = row;
           return data2;
         }), { session });
       }
-      await syncCustomers(db, { active: { upsert: ["memberships", "invoices", "active", "completed"].flatMap((key) => source[key] ?? []), remove: [] } }, session);
-      const data = { ...source };
+      await syncCustomers(db, { active: { upsert: ["memberships", "invoices", "active", "completed"].flatMap((key) => source2[key] ?? []), remove: [] } }, session);
+      const data = { ...source2 };
       for (const key of arrays) delete data[key];
-      const counts = Object.fromEntries(arrays.map((key) => [key, (source[key] ?? []).length]));
+      const counts = Object.fromEntries(arrays.map((key) => [key, (source2[key] ?? []).length]));
       await db.collection("settings").updateOne({ _id: "cafe" }, { $set: { data, revision: payload.revision, migratedAt: /* @__PURE__ */ new Date(), migrationCounts: counts } }, { session });
       return { counts };
     });
@@ -578,7 +619,7 @@ async function importBackup(payload) {
 // server/auth.ts
 var scrypt = promisify(scryptCallback);
 var digest = (s) => createHash("sha256").update(s).digest("hex");
-var forbidden = (message, status = 403) => Object.assign(Error(message), { status });
+var forbidden = (message, status2 = 403) => Object.assign(Error(message), { status: status2 });
 function token(req) {
   return req.headers.cookie?.split(";").map((x) => x.trim()).find((x) => x.startsWith("hj_session="))?.slice(11) ?? "";
 }
@@ -702,6 +743,165 @@ function registerSystemHealth(app2) {
   });
 }
 
+// server/bookings.ts
+import { randomUUID } from "node:crypto";
+import { z as z3 } from "zod";
+var calendar2 = z3.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((d) => Number.isFinite(Date.parse(d + "T00:00:00Z")) && (/* @__PURE__ */ new Date(d + "T00:00:00Z")).toISOString().slice(0, 10) === d);
+var time = z3.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+var source = z3.enum(["Walk-in", "WhatsApp", "Phone"]);
+var status = z3.enum(["Pending", "Confirmed", "Completed", "Cancelled", "No-show"]);
+var createSchema = z3.object({
+  name: z3.string().trim().min(1).max(100),
+  phone: z3.string().transform((v) => v.replace(/\D/g, "")).pipe(z3.string().regex(/^\d{10,15}$/)),
+  source,
+  resource: z3.string().trim().min(2).max(80),
+  date: calendar2,
+  startTime: time,
+  durationMinutes: z3.number().int().min(1).max(1440),
+  players: z3.number().int().min(1).max(8),
+  totalAmount: z3.number().positive().max(1e7),
+  advanceAmount: z3.number().min(0).max(1e7).default(0),
+  paymentMethod: z3.enum(["Cash", "UPI"]).optional(),
+  notes: z3.string().trim().max(1e3).default(""),
+  status: status.default("Confirmed")
+}).strict();
+var updateSchema = z3.object({
+  name: z3.string().trim().min(1).max(100).optional(),
+  phone: z3.string().transform((v) => v.replace(/\D/g, "")).pipe(z3.string().regex(/^\d{10,15}$/)).optional(),
+  source: source.optional(),
+  resource: z3.string().trim().min(2).max(80).optional(),
+  date: calendar2.optional(),
+  startTime: time.optional(),
+  durationMinutes: z3.number().int().min(1).max(1440).optional(),
+  players: z3.number().int().min(1).max(8).optional(),
+  totalAmount: z3.number().positive().max(1e7).optional(),
+  notes: z3.string().trim().max(1e3).optional(),
+  status: status.optional()
+}).strict().refine((v) => Object.keys(v).length > 0);
+var paymentSchema = z3.object({ amount: z3.number().positive().max(1e7), method: z3.enum(["Cash", "UPI"]) }).strict();
+var resourceKey = (value) => value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+var startAt = (date, startTime) => {
+  const value = Date.parse(date + "T" + startTime + ":00+05:30");
+  if (!Number.isFinite(value)) throw Error("Enter a valid booking date and start time.");
+  return value;
+};
+var paid = (booking) => Math.round((booking.payments ?? []).reduce((sum, p) => sum + Math.round(Number(p.amount) * 100), 0)) / 100;
+var actorFor = (user) => user.role === "staff" ? "staff:" + user.username : user.email;
+async function ready2() {
+  await initialize();
+  const { db, client } = await database();
+  await db.collection("bookings").createIndex({ id: 1 }, { unique: true });
+  await db.collection("bookings").createIndex({ resourceKey: 1, start: 1, end: 1, status: 1 });
+  await db.collection("bookingLocks").updateOne({ _id: "gta6" }, { $setOnInsert: { revision: 0 } }, { upsert: true });
+  return { db, client };
+}
+async function transaction(db, client, work) {
+  const session = client.startSession();
+  try {
+    const result = await session.withTransaction(async () => {
+      await db.collection("bookingLocks").updateOne({ _id: "gta6" }, { $inc: { revision: 1 } }, { session });
+      const settings = await db.collection("settings").findOne({ _id: "cafe" }, { session });
+      if (!settings?.migratedAt) throw Object.assign(Error("Import your complete caf\xE9 backup from Owner profile before starting operations."), { status: 503 });
+      const value = await work(session, settings);
+      const saved = await db.collection("settings").updateOne({ _id: "cafe", revision: settings.revision }, { $inc: { revision: 1 } }, { session });
+      if (saved.modifiedCount !== 1) throw Object.assign(Error("Another device saved a change. Refresh and retry."), { status: 409 });
+      return value;
+    }, { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}
+async function findConflict(db, session, key, start, end, excludeId) {
+  const filter = { resourceKey: key, status: { $in: ["Pending", "Confirmed"] }, start: { $lt: end }, end: { $gt: start } };
+  if (excludeId) filter.id = { $ne: excludeId };
+  return db.collection("bookings").findOne(filter, { session, projection: { bookingCode: 1, name: 1, start: 1, end: 1 } });
+}
+function conflictError(conflict) {
+  const when = new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(conflict.start));
+  return Object.assign(Error("This setup already has a booking for " + when + " (" + conflict.bookingCode + "). Choose another time or setup."), { status: 409 });
+}
+function customerUpsert(db, session, booking) {
+  return db.collection("customers").updateOne({ phone: booking.phone }, { $setOnInsert: { id: randomUUID(), name: booking.name, phone: booking.phone, notes: "", createdAt: Date.now(), updatedAt: Date.now() } }, { upsert: true, session });
+}
+function registerBookings(app2) {
+  app2.use("/api/bookings", async (req, res, next) => {
+    const user = await owner(req);
+    if (!user) {
+      res.status(401).json({ error: "Please sign in." });
+      return;
+    }
+    res.locals.bookingUser = user;
+    next();
+  });
+  app2.get("/api/bookings", async (_req, res) => {
+    const { db } = await ready2();
+    const bookings = await db.collection("bookings").find({}).sort({ start: -1 }).toArray();
+    res.json({ bookings: bookings.map(({ _id, ...row }) => row) });
+  });
+  app2.post("/api/bookings", async (req, res) => {
+    const values = createSchema.parse(req.body);
+    if (values.advanceAmount > values.totalAmount) throw Error("Advance cannot be greater than the total booking amount.");
+    if (values.advanceAmount > 0 && !values.paymentMethod) throw Error("Select how the advance was received.");
+    const start = startAt(values.date, values.startTime), end = start + values.durationMinutes * 6e4, key = resourceKey(values.resource), now = Date.now(), user = res.locals.bookingUser, actor = actorFor(user);
+    const payments = values.advanceAmount > 0 ? [{ id: randomUUID(), amount: Math.round(values.advanceAmount * 100) / 100, method: values.paymentMethod, receivedAt: now, actor }] : [];
+    const booking = { id: randomUUID(), bookingCode: "HJ-GTA6-" + values.date.replaceAll("-", "") + "-" + randomUUID().slice(0, 6).toUpperCase(), name: values.name, phone: values.phone, source: values.source, resource: values.resource, resourceKey: key, date: values.date, startTime: values.startTime, start, end, durationMinutes: values.durationMinutes, players: values.players, totalAmount: Math.round(values.totalAmount * 100) / 100, payments, notes: values.notes, status: values.status, createdAt: now, updatedAt: now, createdBy: actor, updatedBy: actor };
+    const { db, client } = await ready2();
+    await transaction(db, client, async (session) => {
+      if (["Pending", "Confirmed"].includes(booking.status)) {
+        const conflict = await findConflict(db, session, key, start, end);
+        if (conflict) throw conflictError(conflict);
+      }
+      await db.collection("bookings").insertOne(booking, { session });
+      await customerUpsert(db, session, booking);
+      await db.collection("activityLog").insertOne({ at: /* @__PURE__ */ new Date(), actor, action: "gta6BookingCreated", recordId: booking.id }, { session });
+      return true;
+    });
+    res.status(201).json({ booking });
+  });
+  app2.patch("/api/bookings/:id", async (req, res) => {
+    const values = updateSchema.parse(req.body), { db, client } = await ready2(), user = res.locals.bookingUser, actor = actorFor(user), now = Date.now();
+    const booking = await transaction(db, client, async (session) => {
+      const existing = await db.collection("bookings").findOne({ id: req.params.id }, { session });
+      if (!existing) throw Object.assign(Error("Booking not found."), { status: 404 });
+      const next = { ...existing, ...values };
+      next.phone = String(next.phone).replace(/\D/g, "");
+      next.resourceKey = resourceKey(next.resource);
+      next.start = startAt(next.date, next.startTime);
+      next.end = next.start + next.durationMinutes * 6e4;
+      next.totalAmount = Math.round(next.totalAmount * 100) / 100;
+      next.updatedAt = now;
+      next.updatedBy = actor;
+      if (next.totalAmount < paid(next)) throw Error("Total amount cannot be lower than payments already received.");
+      if (["Pending", "Confirmed"].includes(next.status)) {
+        const conflict = await findConflict(db, session, next.resourceKey, next.start, next.end, next.id);
+        if (conflict) throw conflictError(conflict);
+      }
+      await db.collection("bookings").replaceOne({ id: next.id }, next, { session });
+      await customerUpsert(db, session, next);
+      await db.collection("activityLog").insertOne({ at: /* @__PURE__ */ new Date(), actor, action: "gta6BookingUpdated", recordId: next.id }, { session });
+      return next;
+    });
+    res.json({ booking });
+  });
+  app2.post("/api/bookings/:id/payments", async (req, res) => {
+    const values = paymentSchema.parse(req.body), { db, client } = await ready2(), user = res.locals.bookingUser, actor = actorFor(user), now = Date.now();
+    const booking = await transaction(db, client, async (session) => {
+      const bookings = db.collection("bookings");
+      const existing = await bookings.findOne({ id: req.params.id }, { session });
+      if (!existing) throw Object.assign(Error("Booking not found."), { status: 404 });
+      if (existing.status === "Cancelled" || existing.status === "No-show") throw Error("Payments cannot be added to a cancelled or no-show booking.");
+      if (Math.round((paid(existing) + values.amount) * 100) > Math.round(existing.totalAmount * 100)) throw Error("Payment exceeds the remaining balance.");
+      const payment = { id: randomUUID(), amount: Math.round(values.amount * 100) / 100, method: values.method, receivedAt: now, actor };
+      const next = { ...existing, payments: [...existing.payments ?? [], payment], updatedAt: now, updatedBy: actor };
+      await bookings.replaceOne({ id: next.id }, next, { session });
+      await db.collection("activityLog").insertOne({ at: /* @__PURE__ */ new Date(), actor, action: "gta6BookingPayment", recordId: next.id }, { session });
+      return next;
+    });
+    res.json({ booking });
+  });
+}
+
 // server/app.ts
 var app = express();
 app.disable("x-powered-by");
@@ -755,6 +955,7 @@ app.post("/api/auth/staff-login", (req, res) => signIn(req, res));
 app.post("/api/auth/setup", (req, res) => signIn(req, res, true));
 app.get("/api/auth/logout", signOut);
 registerSystemHealth(app);
+registerBookings(app);
 app.use("/api/manage", async (req, res, next) => {
   const user = await owner(req);
   if (!user) {
@@ -794,7 +995,7 @@ app.get("/api/manage", async (req, res) => {
   }
   res.json(data);
 });
-var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
+var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "resumeCompleted", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
 app.post("/api/manage", async (req, res) => {
   const user = res.locals.user;
   if (user.role === "staff" && !staffOperations.has(String(req.body?.op))) {
@@ -807,8 +1008,8 @@ app.post("/api/manage", async (req, res) => {
     res.status(503).json({ error: "Import your complete caf\xE9 backup from Owner profile before starting operations." });
     return;
   }
-  const key = z3.string().uuid().parse(req.get("Idempotency-Key"));
-  const revision = z3.number().int().nonnegative().parse(req.body.revision);
+  const key = z4.string().uuid().parse(req.get("Idempotency-Key"));
+  const revision = z4.number().int().nonnegative().parse(req.body.revision);
   res.json(await mutate({ ...req.body, revision }, user.role === "staff" ? "staff:" + user.username : user.email, key));
 });
 app.use("/api/staff", async (req, res, next) => {
@@ -823,9 +1024,9 @@ app.use("/api/staff", async (req, res, next) => {
   }
   next();
 });
-var username = z3.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_.-]{2,31}$/);
-var createStaff = z3.object({ name: z3.string().trim().min(1).max(100), username, password: z3.string().min(12).max(200), enabled: z3.boolean().optional() }).strict();
-var updateStaff = z3.object({ name: z3.string().trim().min(1).max(100).optional(), username: username.optional(), password: z3.string().min(12).max(200).optional(), enabled: z3.boolean().optional() }).strict().refine((v) => Object.keys(v).length > 0);
+var username = z4.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_.-]{2,31}$/);
+var createStaff = z4.object({ name: z4.string().trim().min(1).max(100), username, password: z4.string().min(12).max(200), enabled: z4.boolean().optional() }).strict();
+var updateStaff = z4.object({ name: z4.string().trim().min(1).max(100).optional(), username: username.optional(), password: z4.string().min(12).max(200).optional(), enabled: z4.boolean().optional() }).strict().refine((v) => Object.keys(v).length > 0);
 app.get("/api/staff", async (_req, res) => {
   const { db } = await database();
   await initialize();
@@ -842,7 +1043,7 @@ app.post("/api/staff", async (req, res) => {
   await initialize();
   const { db } = await database();
   const fields = await passwordFields(values.password);
-  const row = { id: randomUUID(), name: values.name, username: values.username, enabled: values.enabled ?? true, ...fields, createdAt: /* @__PURE__ */ new Date() };
+  const row = { id: randomUUID2(), name: values.name, username: values.username, enabled: values.enabled ?? true, ...fields, createdAt: /* @__PURE__ */ new Date() };
   try {
     await db.collection("staff").insertOne(row);
   } catch (e) {
@@ -873,8 +1074,8 @@ app.patch("/api/staff/:id", async (req, res) => {
   res.json({ ok: true });
 });
 app.use((error, _req, res, _next) => {
-  const status = error.status ?? (error instanceof z3.ZodError ? 400 : 500);
-  res.status(status).json({ error: error instanceof z3.ZodError ? "Check the entered details." : status === 500 ? "Server error. Check backend logs." : error.message ?? "Request failed." });
+  const status2 = error.status ?? (error instanceof z4.ZodError ? 400 : 500);
+  res.status(status2).json({ error: error instanceof z4.ZodError ? "Check the entered details." : status2 === 500 ? "Server error. Check backend logs." : error.message ?? "Request failed." });
 });
 var app_default = app;
 export {
