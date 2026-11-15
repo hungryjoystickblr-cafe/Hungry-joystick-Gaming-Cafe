@@ -21,7 +21,7 @@ var playedMilliseconds = (s, now) => {
 var coveredMinutes = (s, now) => s.membershipId ? Math.min(s.memberMinutesAtStart ?? 0, Math.ceil(playedMilliseconds(s, Math.min(now, s.memberExpiresAt ?? now)) / 6e4)) : 0;
 
 // client/model.ts
-var initial = () => ({ stations: Array.from({ length: 16 }, (_, i) => ({ id: "pc" + (i + 1), name: "PC " + String(i + 1).padStart(2, "0"), type: "PC", rate: 79 })), menu: [], active: [], invoices: [] });
+var initial = () => ({ stations: Array.from({ length: 16 }, (_, i) => ({ id: "pc" + (i + 1), name: "PC " + String(i + 1).padStart(2, "0"), type: "PC", rate: 79 })), menu: [], active: [], completed: [], cancelled: [], invoices: [], bookings: [] });
 var cost = (s, now) => {
   const minutes = Math.ceil(playedMilliseconds(s, now) / 6e4), hourly = s.rate + (s.controllerCount ?? 0) * (s.controllerRate ?? 0);
   return Math.round((s.membershipId ? (Math.max(0, minutes - coveredMinutes(s, now)) * s.rate + minutes * (s.controllerCount ?? 0) * (s.controllerRate ?? 0)) / 60 : s.offer ? s.offer.price + Math.max(0, minutes - s.offer.minutes) * hourly / 60 : minutes * hourly / 60) * 100) / 100;
@@ -178,6 +178,7 @@ var input = z.discriminatedUnion("op", [
   z.object({ op: z.literal("pause"), id: z.string() }),
   z.object({ op: z.literal("resume"), id: z.string() }),
   z.object({ op: z.literal("resumeCompleted"), id: z.string() }),
+  z.object({ op: z.literal("cancel"), id: z.string(), reason: z.string().trim().min(3).max(300) }),
   z.object({ op: z.literal("expense"), date: calendar, category: z.string().trim().min(1).max(60), description: z.string().trim().min(1).max(200), amount: z.number().positive().max(1e7), payment: z.enum(["Cash", "UPI", "Card"]) }),
   z.object({ op: z.literal("deleteExpense"), id: z.string() }),
   z.object({ op: z.literal("stop"), id: z.string() }),
@@ -278,6 +279,35 @@ function applyOperation(s, body, actor, now = Date.now()) {
     delete session.upiAmount;
     s.completed = s.completed.filter((x) => x.id !== session.id);
     s.active.push(session);
+  }
+  if (op.op === "cancel") {
+    const active = s.active.find((x) => x.id === op.id);
+    const completed = s.completed.find((x) => x.id === op.id);
+    const session = active ?? completed;
+    if (!session) throw Error("Session is no longer active or waiting for billing.");
+    if (s.cancelled?.some((x) => x.id === op.id)) throw Error("This session has already been cancelled.");
+    if (completed && session.membershipId) {
+      const member = s.memberships.find((x) => x.id === session.membershipId);
+      if (!member) throw Error("Membership record is missing. Cancellation was not applied.");
+      const used = session.membershipMinutesUsed ?? 0;
+      if (member.remainingMinutes + used > member.totalMinutes) throw Error("Membership balance changed. Refresh before cancelling this session.");
+      member.remainingMinutes += used;
+      session.memberBalanceAfter = member.remainingMinutes;
+    }
+    session.end = now;
+    session.gaming = 0;
+    session.tax = void 0;
+    session.total = 0;
+    session.payment = "Cancelled";
+    delete session.cashAmount;
+    delete session.upiAmount;
+    session.cancelledAt = now;
+    session.cancellationReason = op.reason;
+    session.cancelledBy = actor;
+    s.active = s.active.filter((x) => x.id !== op.id);
+    s.completed = s.completed.filter((x) => x.id !== op.id);
+    s.cancelled ??= [];
+    s.cancelled.unshift(session);
   }
   if (op.op === "membership") {
     const p = plans[op.planHours];
@@ -393,9 +423,9 @@ function applyOperation(s, body, actor, now = Date.now()) {
     if (f) Object.assign(f, { name: op.name, price: op.price, category: op.category });
     else s.menu.push({ id: crypto.randomUUID(), name: op.name, price: op.price, category: op.category });
   }
-  if (["start", "membership", "end", "combine", "stop", "editInvoice"].includes(op.op)) {
+  if (["start", "membership", "end", "combine", "stop", "editInvoice", "cancel"].includes(op.op)) {
     s.customers ??= [];
-    const candidates = [...s.active ?? [], ...s.memberships ?? [], ...s.invoices ?? [], ...s.completed ?? []];
+    const candidates = [...s.active ?? [], ...s.memberships ?? [], ...s.invoices ?? [], ...s.completed ?? [], ...s.cancelled ?? []];
     for (const row of candidates) {
       const name = String(row.name ?? "").trim(), phone = phoneKey(String(row.phone ?? ""));
       if (name && /^\d{10,15}$/.test(phone) && !s.customers.some((c) => c.phone === phone)) s.customers.push({ id: crypto.randomUUID(), name, phone, notes: "", createdAt: now, updatedAt: now });
@@ -415,13 +445,13 @@ async function database() {
   const client = await connection;
   return { client, db: client.db("hungry_joystick") };
 }
-var arrays = ["stations", "menu", "active", "completed", "memberships", "invoices", "expenses", "customers", "bookings"];
+var arrays = ["stations", "menu", "active", "completed", "cancelled", "memberships", "invoices", "expenses", "customers", "bookings"];
 var clean = (x) => {
   const { _id, ...data } = x;
   return data;
 };
 async function syncCustomers(db, patch, session) {
-  const rows = ["memberships", "invoices", "active", "completed", "bookings"].flatMap((key) => patch[key]?.upsert ?? []);
+  const rows = ["memberships", "invoices", "active", "completed", "cancelled", "bookings"].flatMap((key) => patch[key]?.upsert ?? []);
   const byPhone = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const name = String(row?.name ?? "").trim();
@@ -586,7 +616,7 @@ async function importBackup(payload) {
     const rows = source2[key] ?? [];
     if (rows.some((x) => !x || typeof x.id !== "string" || x.id.length > 200) || new Set(rows.map((x) => x.id)).size !== rows.length) throw Error("Invalid or duplicate record IDs: " + key);
   }
-  for (const key of ["active", "completed", "invoices"]) for (const row of source2[key] ?? []) {
+  for (const key of ["active", "completed", "cancelled", "invoices"]) for (const row of source2[key] ?? []) {
     if (!Number.isFinite(row.start) || !Array.isArray(row.items)) throw Error("Invalid session in backup");
   }
   await initialize();
@@ -604,7 +634,7 @@ async function importBackup(payload) {
           return data2;
         }), { session });
       }
-      await syncCustomers(db, { active: { upsert: ["memberships", "invoices", "active", "completed"].flatMap((key) => source2[key] ?? []), remove: [] } }, session);
+      await syncCustomers(db, { active: { upsert: ["memberships", "invoices", "active", "completed", "cancelled"].flatMap((key) => source2[key] ?? []), remove: [] } }, session);
       const data = { ...source2 };
       for (const key of arrays) delete data[key];
       const counts = Object.fromEntries(arrays.map((key) => [key, (source2[key] ?? []).length]));
@@ -995,7 +1025,7 @@ app.get("/api/manage", async (req, res) => {
   }
   res.json(data);
 });
-var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "resumeCompleted", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
+var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "resumeCompleted", "cancel", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
 app.post("/api/manage", async (req, res) => {
   const user = res.locals.user;
   if (user.role === "staff" && !staffOperations.has(String(req.body?.op))) {

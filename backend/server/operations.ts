@@ -12,6 +12,7 @@ export const input=z.discriminatedUnion('op',[
  z.object({op:z.literal('pause'),id:z.string()}),
  z.object({op:z.literal('resume'),id:z.string()}),
  z.object({op:z.literal('resumeCompleted'),id:z.string()}),
+ z.object({op:z.literal('cancel'),id:z.string(),reason:z.string().trim().min(3).max(300)}),
  z.object({op:z.literal('expense'),date:calendar,category:z.string().trim().min(1).max(60),description:z.string().trim().min(1).max(200),amount:z.number().positive().max(10000000),payment:z.enum(['Cash','UPI','Card'])}),
  z.object({op:z.literal('deleteExpense'),id:z.string()}),
  z.object({op:z.literal('stop'),id:z.string()}),
@@ -54,6 +55,23 @@ member.remainingMinutes+=previouslyUsed;session.memberMinutesAtStart=member.rema
 delete session.end;delete session.gaming;delete session.total;delete session.tax;delete session.shop;delete session.payment;delete session.cashAmount;delete session.upiAmount;
 s.completed=s.completed.filter(x=>x.id!==session.id);s.active.push(session);
 }
+if(op.op==='cancel'){
+const active=s.active.find(x=>x.id===op.id);
+const completed=s.completed.find(x=>x.id===op.id);
+const session=active??completed;
+if(!session)throw Error('Session is no longer active or waiting for billing.');
+if(s.cancelled?.some(x=>x.id===op.id))throw Error('This session has already been cancelled.');
+if(completed&&session.membershipId){
+const member=s.memberships.find(x=>x.id===session.membershipId);
+if(!member)throw Error('Membership record is missing. Cancellation was not applied.');
+const used=session.membershipMinutesUsed??0;
+if(member.remainingMinutes+used>member.totalMinutes)throw Error('Membership balance changed. Refresh before cancelling this session.');
+member.remainingMinutes+=used;
+session.memberBalanceAfter=member.remainingMinutes;
+}
+session.end=now;session.gaming=0;session.tax=undefined;session.total=0;session.payment='Cancelled';delete session.cashAmount;delete session.upiAmount;session.cancelledAt=now;session.cancellationReason=op.reason;session.cancelledBy=actor;
+s.active=s.active.filter(x=>x.id!==op.id);s.completed=s.completed.filter(x=>x.id!==op.id);s.cancelled??=[];s.cancelled.unshift(session);
+}
 if(op.op==='membership'){const p=plans[op.planHours];if(op.remainingMinutes>p.hours*60)throw Error('Remaining time exceeds the purchased hours.');if(op.expiryDate<op.purchasedDate)throw Error('Expiry cannot be before purchase.');if(op.purchasedDate>new Date(now).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}))throw Error('Purchase date cannot be in the future.');if(op.recordSale&&op.remainingMinutes!==p.hours*60)throw Error('New purchases must start with the full hour balance. Use existing membership to import a used plan.');const paymentAmounts=splitAmounts(op,p.price);const id=crypto.randomUUID();s.memberships.unshift({id,name:op.name,phone:phoneKey(op.phone),planHours:op.planHours,purchasedDate:op.purchasedDate,expiryDate:op.expiryDate,expiresAt:expiryTime(op.expiryDate),totalMinutes:p.hours*60,remainingMinutes:op.remainingMinutes,importedUsedMinutes:p.hours*60-op.remainingMinutes,price:p.price,payment:op.payment,...paymentAmounts,recordSale:op.recordSale,createdAt:now});if(op.recordSale)s.invoices.unshift({id:crypto.randomUUID(),station:'membership',stationName:'Membership purchase',name:op.name,phone:phoneKey(op.phone),start:now,end:now,planned:null,rate:0,items:[],gaming:0,total:p.price,payment:op.payment,...paymentAmounts,kind:'membershipSale',shop:s.shop,salePlan:p.hours+'-hour PC membership',saleMembershipId:id});}
 if(op.op==='membershipPaid'){const m=s.memberships.find(m=>m.id===op.id);if(!m)throw Error('Membership not found.');if(m.payment!=='Unpaid')throw Error('Membership is already paid.');const paymentAmounts=splitAmounts(op,m.price);m.payment=op.payment;Object.assign(m,paymentAmounts);const invoice=s.invoices.find(x=>x.saleMembershipId===m.id);if(invoice){invoice.payment=op.payment;Object.assign(invoice,paymentAmounts);}}
 if(op.op==='start'){const st=s.stations.find(x=>x.id===op.station);if(!st||s.active.some(x=>x.station===st.id))throw Error('Station is unavailable.');const offer=op.offer?offersFor(st,now).find(x=>x.id===op.offer):undefined;if(op.offer&&!offer)throw Error('This offer is not available for this station or time.');if(op.controllers&&controllerRateFor(st)===undefined)throw Error('Controller rates are not listed for this station type.');const member=op.membershipId?s.memberships.find(m=>m.id===op.membershipId):undefined;if(op.membershipId){if(!member)throw Error('Membership not found.');if(st.type!=='PC')throw Error('Hour memberships are for PC gaming only.');if(op.offer)throw Error('Choose membership or gaming offer, not both.');if(member.payment==='Unpaid')throw Error('Record membership payment before starting a member session.');if(now>member.expiresAt||member.remainingMinutes<=0)throw Error('Membership is expired or has no hours left.');if(s.active.some(a=>a.membershipId&&phoneKey(a.phone)===member.phone))throw Error('This customer already has an active membership session.');}
@@ -67,5 +85,5 @@ if(op.op==='deleteStation'){if(!s.stations.some(x=>x.id===op.id))throw Error('St
 if(op.op==='station'){const st=s.stations.find(x=>x.id===op.id);if(st)Object.assign(st,{name:op.name,type:op.type,rate:op.rate,weekendRate:op.weekendRate??op.rate,controllerRate:op.controllerRate});else s.stations.push({id:crypto.randomUUID(),name:op.name,type:op.type,rate:op.rate,weekendRate:op.weekendRate??op.rate,controllerRate:op.controllerRate});}
 if(op.op==='menu'){const f=s.menu.find(x=>x.id===op.id);if(op.id&&!f)throw Error('Menu item not found.');if(f)Object.assign(f,{name:op.name,price:op.price,category:op.category});else s.menu.push({id:crypto.randomUUID(),name:op.name,price:op.price,category:op.category});}
 
-if(['start','membership','end','combine','stop','editInvoice'].includes(op.op)){s.customers??=[];const candidates=[...(s.active??[]),...(s.memberships??[]),...(s.invoices??[]),...(s.completed??[])];for(const row of candidates){const name=String(row.name??'').trim(),phone=phoneKey(String(row.phone??''));if(name&&/^\d{10,15}$/.test(phone)&&!s.customers.some(c=>c.phone===phone))s.customers.push({id:crypto.randomUUID(),name,phone,notes:'',createdAt:now,updatedAt:now});}}
+if(['start','membership','end','combine','stop','editInvoice','cancel'].includes(op.op)){s.customers??=[];const candidates=[...(s.active??[]),...(s.memberships??[]),...(s.invoices??[]),...(s.completed??[]),...(s.cancelled??[])];for(const row of candidates){const name=String(row.name??'').trim(),phone=phoneKey(String(row.phone??''));if(name&&/^\d{10,15}$/.test(phone)&&!s.customers.some(c=>c.phone===phone))s.customers.push({id:crypto.randomUUID(),name,phone,notes:'',createdAt:now,updatedAt:now});}}
 return s;}
