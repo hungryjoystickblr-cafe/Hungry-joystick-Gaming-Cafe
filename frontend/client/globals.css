@@ -427,3 +427,132 @@ body{background:var(--bg);color:var(--ink);font-family:'DM Sans',Arial,sans-seri
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+
+/* Billing Desk: keep session content readable even in the narrow sidebar. */
+.billingpanel .completedrow {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  margin: 8px 0 12px;
+}
+.billingpanel .completedrow > .completedcard {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  align-items: flex-start;
+}
+.billingpanel .completedcard > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.billingpanel .completedtitle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 8px;
+  min-width: 0;
+  line-height: 1.5;
+}
+.billingpanel .completedtitle b {
+  min-width: 0;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-height: 1.5;
+}
+.billingpanel .completedtitle strong {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.billingpanel .completedactions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+.billingpanel .completedactions button {
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 5px;
+  white-space: normal;
+  overflow-wrap: normal;
+  line-height: 1.35;
+  font-size: 10px;
+}
+.billingpanel .completedactions .resumecompleted {
+  background: #b4f36b;
+  color: #101827;
+  border: 1px solid #91ce4c;
+}
+.billingpanel .completedactions .cancelcompleted {
+  border: 1px solid #d97757;
+}
+.billingpanel .cancelledhistory {
+  min-width: 0;
+  width: 100%;
+}
+.billingpanel .cancelledcard {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  cursor: default;
+  padding: 11px;
+}
+.billingpanel .cancelledtitle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.billingpanel .cancelledtitle b {
+  min-width: 0;
+  color: #c4d5e4;
+  font: 700 12px/1.5 'Courier New', monospace;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+.billingpanel .cancelledtitle strong {
+  color: #dfe9ab;
+  white-space: nowrap;
+  font: 700 11px 'Courier New', monospace;
+}
+.billingpanel .cancelledtitle span {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: 3px 6px;
+  border: 1px solid #8b665d;
+  color: #f0a58e;
+  font: 700 9px 'Courier New', monospace;
+}
+.billingpanel .cancelledmeta {
+  min-width: 0;
+  margin-top: 8px;
+}
+.billingpanel .cancelledmeta > span,
+.billingpanel .cancelledmeta small,
+.billingpanel .cancelledmeta p {
+  display: block;
+  min-width: 0;
+  margin: 5px 0 0;
+  color: #9eb5c2;
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+.billingpanel .cancelledmeta p {
+  color: #c3a9a0;
+}
+@media (max-width: 420px) {
+  .billingpanel .completedactions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
