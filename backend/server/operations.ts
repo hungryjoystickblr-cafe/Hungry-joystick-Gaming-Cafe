@@ -48,7 +48,7 @@ const member=s.memberships.find(x=>x.id===session.membershipId);if(!member)throw
 if(s.active.some(a=>a.membershipId&&phoneKey(a.phone)===member.phone))throw Error('This customer already has an active membership session.');
 const previouslyUsed=session.membershipMinutesUsed??0;
 if(member.remainingMinutes+previouslyUsed>member.totalMinutes)throw Error('Membership balance changed. Refresh before resuming this session.');
-member.remainingMinutes+=previouslyUsed;delete session.membershipMinutesUsed;delete session.memberBalanceAfter;
+member.remainingMinutes+=previouslyUsed;session.memberMinutesAtStart=member.remainingMinutes;delete session.membershipMinutesUsed;delete session.memberBalanceAfter;
 }
 delete session.end;delete session.gaming;delete session.total;delete session.tax;delete session.shop;delete session.payment;delete session.cashAmount;delete session.upiAmount;
 s.completed=s.completed.filter(x=>x.id!==session.id);s.active.push(session);
