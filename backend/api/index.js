@@ -177,6 +177,7 @@ var input = z.discriminatedUnion("op", [
   z.object({ op: z.literal("taxConfig"), enabled: z.boolean(), label: z.string().trim().min(1).max(50), gamingRate: z.number().min(0).max(100), foodRate: z.number().min(0).max(100) }),
   z.object({ op: z.literal("pause"), id: z.string() }),
   z.object({ op: z.literal("resume"), id: z.string() }),
+  z.object({ op: z.literal("resumeCompleted"), id: z.string() }),
   z.object({ op: z.literal("expense"), date: calendar, category: z.string().trim().min(1).max(60), description: z.string().trim().min(1).max(200), amount: z.number().positive().max(1e7), payment: z.enum(["Cash", "UPI", "Card"]) }),
   z.object({ op: z.literal("deleteExpense"), id: z.string() }),
   z.object({ op: z.literal("stop"), id: z.string() }),
@@ -243,6 +244,41 @@ function applyOperation(s, body, actor, now = Date.now()) {
       delete a.pausedAt;
     }
   }
+  if (op.op === "resumeCompleted") {
+    const session = s.completed.find((x) => x.id === op.id);
+    if (!session) throw Error("Session is no longer waiting for billing.");
+    if (!s.stations.some((x) => x.id === session.station)) throw Error("The original station is no longer configured. This session cannot be resumed.");
+    if (s.active.some((x) => x.station === session.station)) throw Error("This station is already in use. End its current session before resuming this one.");
+    session.pauses ??= [];
+    const openPause = session.pauses.slice().reverse().find((p) => p.end === void 0);
+    const pausedSince = session.pausedAt ?? openPause?.start ?? session.end ?? now;
+    if (!openPause) session.pauses.push({ start: pausedSince });
+    if (session.planned !== null) session.planned += Math.max(0, now - pausedSince);
+    const pause = session.pauses.slice().reverse().find((p) => p.end === void 0);
+    if (pause) pause.end = now;
+    delete session.pausedAt;
+    if (session.membershipId) {
+      const member = s.memberships.find((x) => x.id === session.membershipId);
+      if (!member) throw Error("Membership record is missing.");
+      if (s.active.some((a) => a.membershipId && phoneKey(a.phone) === member.phone)) throw Error("This customer already has an active membership session.");
+      const previouslyUsed = session.membershipMinutesUsed ?? 0;
+      if (member.remainingMinutes + previouslyUsed > member.totalMinutes) throw Error("Membership balance changed. Refresh before resuming this session.");
+      member.remainingMinutes += previouslyUsed;
+      session.memberMinutesAtStart = member.remainingMinutes;
+      delete session.membershipMinutesUsed;
+      delete session.memberBalanceAfter;
+    }
+    delete session.end;
+    delete session.gaming;
+    delete session.total;
+    delete session.tax;
+    delete session.shop;
+    delete session.payment;
+    delete session.cashAmount;
+    delete session.upiAmount;
+    s.completed = s.completed.filter((x) => x.id !== session.id);
+    s.active.push(session);
+  }
   if (op.op === "membership") {
     const p = plans[op.planHours];
     if (op.remainingMinutes > p.hours * 60) throw Error("Remaining time exceeds the purchased hours.");
@@ -302,6 +338,11 @@ function applyOperation(s, body, actor, now = Date.now()) {
       session.items.push({ name: f.name, price: f.price, qty: op.qty });
     }
     if (op.op === "end" || op.op === "stop") {
+      if (op.op === "stop" && session.pausedAt === void 0) {
+        session.pausedAt = now;
+        session.pauses ??= [];
+        session.pauses.push({ start: now });
+      }
       if (session.membershipId) {
         const m = s.memberships.find((x) => x.id === session.membershipId);
         if (!m) throw Error("Membership record is missing.");
@@ -954,7 +995,7 @@ app.get("/api/manage", async (req, res) => {
   }
   res.json(data);
 });
-var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
+var staffOperations = /* @__PURE__ */ new Set(["customer", "start", "pause", "resume", "resumeCompleted", "stop", "extend", "food", "foods", "end", "combine", "membership", "membershipPaid"]);
 app.post("/api/manage", async (req, res) => {
   const user = res.locals.user;
   if (user.role === "staff" && !staffOperations.has(String(req.body?.op))) {
