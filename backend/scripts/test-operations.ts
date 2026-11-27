@@ -13,6 +13,20 @@ const weekendPoolExpected=new Map([[1,200],[30,200],[31,300],[60,300],[61,500],[
 for(const [minutes,expected] of weekendPoolExpected){assert.equal(cost(billingFixture(minutes,{stationType:'Pool',poolHalfHourRate:200,rate:300}),minutes*60000),expected,`Weekend pool billing at ${minutes} minutes`);}
 assert.equal(cost(billingFixture(196,{stationType:'PC',offer:{name:'3-hour offer',price:269,minutes:180,includes:'Coke'}}),196*60000),319,'Offer overtime rounds independently after included time');
 console.log('PASS: non-pool 15/30-minute billing boundaries, weekday/weekend pool blocks through 2 hours, and offer overtime rounding.');
+const legacyState=upgradePrices(initial());legacyState.completed=[];legacyState.active=[];
+const legacyPc=legacyState.stations.find(x=>x.type==='PC')!;
+applyOperation(legacyState,{op:'start',station:legacyPc.id,name:'Legacy PC',phone:'',minutes:null},'test',start);
+delete legacyState.active[0].stationType;delete legacyState.active[0].poolHalfHourRate;
+applyOperation(legacyState,{op:'stop',id:legacyState.active[0].id},'test',start+16*60000);
+assert.equal(legacyState.completed[0].gaming,50,'Existing PC session uses new 30-minute rounding at checkout');
+const legacyPool=upgradePrices(initial());legacyPool.completed=[];legacyPool.active=[];
+const poolStation=legacyPool.stations.find(x=>x.type==='Pool')!;
+applyOperation(legacyPool,{op:'start',station:poolStation.id,name:'Legacy Pool',phone:'',minutes:null},'test',start);
+delete legacyPool.active[0].stationType;delete legacyPool.active[0].poolHalfHourRate;
+applyOperation(legacyPool,{op:'stop',id:legacyPool.active[0].id},'test',start+31*60000);
+assert.equal(legacyPool.completed[0].gaming,250,'Existing weekday pool session uses fixed one-hour price');
+console.log('PASS: existing in-progress sessions receive the new pricing at checkout.');
+
 
 const s=upgradePrices(initial());s.active=[];s.invoices=[];s.completed=[];s.stations=Array.from({length:200},(_,i)=>({id:'pc-'+i,name:'PC '+i,type:'PC',rate:100,weekendRate:150}));
 const start=Date.parse('2026-10-14T06:00:00Z'),t=performance.now();
