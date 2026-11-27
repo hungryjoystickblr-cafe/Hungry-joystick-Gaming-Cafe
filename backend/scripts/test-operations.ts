@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
-import {initial} from '../client/model.js';
+import {initial,cost} from '../client/model.js';
 import {upgradePrices} from '../client/pricing.js';
 import {applyOperation} from '../server/operations.js';
 import {diff} from '../server/store.js';
+
+const billingFixture=(minutes:number,extra:Record<string,unknown>={})=>({id:'billing-test',station:'test',stationName:'Test station',name:'Test',phone:'',start:0,planned:null,rate:100,items:[],...extra});
+const nonPoolExpected=new Map([[1,1.67],[15,25],[16,50],[30,50],[31,100],[60,100],[61,150],[90,150],[91,200]]);
+for(const [minutes,expected] of nonPoolExpected){assert.equal(cost(billingFixture(minutes,{stationType:'PC'}),minutes*60000),expected,`Non-pool billing at ${minutes} minutes`);}
+const weekdayPoolExpected=new Map([[1,150],[30,150],[31,250],[60,250],[61,400],[90,400],[91,550],[120,550]]);
+for(const [minutes,expected] of weekdayPoolExpected){assert.equal(cost(billingFixture(minutes,{stationType:'Pool',poolHalfHourRate:150,rate:250}),minutes*60000),expected,`Weekday pool billing at ${minutes} minutes`);}
+const weekendPoolExpected=new Map([[1,200],[30,200],[31,300],[60,300],[61,500],[90,500],[91,700],[120,700]]);
+for(const [minutes,expected] of weekendPoolExpected){assert.equal(cost(billingFixture(minutes,{stationType:'Pool',poolHalfHourRate:200,rate:300}),minutes*60000),expected,`Weekend pool billing at ${minutes} minutes`);}
+assert.equal(cost(billingFixture(196,{stationType:'PC',offer:{name:'3-hour offer',price:269,minutes:180,includes:'Coke'}}),196*60000),319,'Offer overtime rounds independently after included time');
+console.log('PASS: non-pool 15/30-minute billing boundaries, weekday/weekend pool blocks through 2 hours, and offer overtime rounding.');
+
 const s=upgradePrices(initial());s.active=[];s.invoices=[];s.completed=[];s.stations=Array.from({length:200},(_,i)=>({id:'pc-'+i,name:'PC '+i,type:'PC',rate:100,weekendRate:150}));
 const start=Date.parse('2026-10-14T06:00:00Z'),t=performance.now();
 for(let i=0;i<200;i++)applyOperation(s,{op:'start',station:'pc-'+i,name:'Load fixture '+i,phone:'',minutes:null},'test',start);
